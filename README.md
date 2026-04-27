@@ -20,13 +20,10 @@ Marketplace e-commerce con validación de pagos distribuida. 3 réplicas Go/Gin 
 
 1. [Arquitectura del sistema](#1-arquitectura-del-sistema)
 2. [Estructura de archivos del proyecto](#2-estructura-de-archivos-del-proyecto)
-3. [Arch Linux — Instalación completa](#3-arch-linux--instalación-completa)
-4. [Debian/Ubuntu — Instalación completa](#4-debianubuntu--instalación-completa)
-5. [Verificación del sistema](#5-verificación-del-sistema)
-6. [Reversión completa — Arch Linux](#6-reversión-completa--arch-linux)
-7. [Reversión completa — Debian/Ubuntu](#7-reversión-completa--debianubuntu)
-8. [Diferencias clave entre distros](#8-diferencias-clave-entre-distros)
-9. [Referencia rápida de comandos](#9-referencia-rápida-de-comandos)
+3. [Debian/Ubuntu — Instalación completa](#3-debianubuntu--instalación-completa)
+4. [Verificación del sistema](#4-verificación-del-sistema)
+5. [Reversión completa — Debian/Ubuntu](#5-reversión-completa--debianubuntu)
+6. [Referencia rápida de comandos](#6-referencia-rápida-de-comandos)
 
 ---
 
@@ -453,3 +450,102 @@ for i in {1..6}; do curl -s http://localhost/validar | python3 -m json.tool; don
 ## Algoritmo de balanceo
 
 **Round-Robin** (default NGINX). Elegido porque las validaciones son stateless y de carga uniforme, por lo que la distribución secuencial es óptima sin overhead de monitoreo.
+
+Guía de Mantenimiento y Actualización: Validador-TX
+
+Este documento detalla los procedimientos necesarios para aplicar cambios en los distintos componentes del proyecto, clasificados según el impacto y las acciones requeridas para su despliegue.
+⚡ Cambios Instantáneos (Archivos Estáticos y Configuración)
+
+Estos archivos pueden modificarse sin afectar la ejecución de las réplicas de la aplicación.
+1. index.html (Frontend)
+
+NGINX sirve este archivo directamente. Los cambios son visibles de forma inmediata en el próximo request.
+Bash
+
+# Editar directamente en la VM
+sudo nano /opt/validador-tx/static/index.html
+
+# No necesitas reiniciar nada. Para verificar el cambio:
+curl -s http://localhost | grep '<title>'
+
+2. validador-tx.nginx.conf (Configuración NGINX)
+
+Requiere recargar el servicio NGINX para aplicar nuevas rutas, puertos o reglas de balanceo.
+Bash
+
+# Editar la configuración
+sudo nano /etc/nginx/sites-available/validador-tx
+
+# 1. Verificar que la sintaxis sea correcta
+sudo nginx -t
+
+# 2. Aplicar cambios sin cortar conexiones activas
+sudo systemctl reload nginx
+
+🛠️ Cambios que requieren Acción (Recompilación y Reinicio)
+1. main.go (Aplicación Core)
+
+Al ser un lenguaje compilado, cualquier cambio en la lógica requiere generar un nuevo binario y reiniciar las réplicas para liberar el archivo en uso.
+
+Pasos para el despliegue:
+
+    Conectarse a la VM:
+    Bash
+
+    ssh usuario@146.83.102.20
+
+    Preparar y Compilar:
+    Bash
+
+    cd ~/validador-tx
+    nano main.go
+    go build -o validador-tx .
+
+    Detener réplicas y reemplazar binario:
+    Bash
+
+    # Parar réplicas para liberar el binario
+    sudo systemctl stop validador-tx@3001 validador-tx@3002 validador-tx@3003
+
+    # Reemplazar e instalar
+    sudo cp validador-tx /opt/validador-tx/validador-tx
+    sudo chown www-data:www-data /opt/validador-tx/validador-tx
+
+    Reiniciar y Verificar:
+    Bash
+
+    sudo systemctl start validador-tx@3001 validador-tx@3002 validador-tx@3003
+
+    # Test de salud
+    for p in 3001 3002 3003; do
+      echo -n ":$p → "; curl -s http://localhost:$p/health
+    done
+
+    [!TIP]
+    Si no te importa un tiempo de inactividad (downtime) de milisegundos, puedes simplificar los pasos 3 y 4 usando:
+    sudo systemctl restart validador-tx@{3001,3002,3003}
+
+2. validador-tx@.service (Unidad de Systemd)
+
+Si modificas variables de entorno, límites de recursos o parámetros de ejecución en el archivo de servicio.
+Bash
+
+sudo nano /etc/systemd/system/validador-tx@.service
+
+# Recargar configuración de systemd y reiniciar réplicas
+sudo systemctl daemon-reload
+sudo systemctl restart validador-tx@3001 validador-tx@3002 validador-tx@3003
+
+📊 Tabla Resumen
+Archivo	Función	Acción tras editar
+index.html	Frontend estático	Ninguna (Inmediato)
+nginx.conf	Balanceo y rutas	nginx -t → systemctl reload nginx
+main.go	Lógica del servidor	Recompilar + Reemplazar binario + Reiniciar réplicas
+validador-tx@.service	Gestión de procesos	daemon-reload + Reiniciar réplicas
+💡 Regla General
+
+    Texto leído en runtime (HTML, Config de NGINX): Cambio inmediato o simple reload.
+
+    Código fuente compilado (Go): Requiere recompilar el binario y reiniciar los procesos para que carguen el nuevo código en memoria.
+
+
