@@ -24,6 +24,7 @@ Marketplace e-commerce con validación de pagos distribuida. 3 réplicas Go/Gin 
 4. [Verificación del sistema](#4-verificación-del-sistema)
 5. [Reversión completa — Debian/Ubuntu](#5-reversión-completa--debianubuntu)
 6. [Referencia rápida de comandos](#6-referencia-rápida-de-comandos)
+7. [Realizar cambios en el sistema ](#7-realizar-cambios-en-el-sistema)
 
 ---
 
@@ -451,7 +452,7 @@ for i in {1..6}; do curl -s http://localhost/validar | python3 -m json.tool; don
 
 **Round-Robin** (default NGINX). Elegido porque las validaciones son stateless y de carga uniforme, por lo que la distribución secuencial es óptima sin overhead de monitoreo.
 
-## Realizar cambios en el sistema 
+## 7. Realizar cambios en el sistema 
 
 Referencia rápida para saber qué hacer después de modificar cada archivo del proyecto en la VM.
  
