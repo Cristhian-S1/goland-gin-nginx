@@ -451,101 +451,145 @@ for i in {1..6}; do curl -s http://localhost/validar | python3 -m json.tool; don
 
 **Round-Robin** (default NGINX). Elegido porque las validaciones son stateless y de carga uniforme, por lo que la distribución secuencial es óptima sin overhead de monitoreo.
 
-Guía de Mantenimiento y Actualización: Validador-TX
+## Realizar cambios en el sistema 
 
-Este documento detalla los procedimientos necesarios para aplicar cambios en los distintos componentes del proyecto, clasificados según el impacto y las acciones requeridas para su despliegue.
-⚡ Cambios Instantáneos (Archivos Estáticos y Configuración)
-
-Estos archivos pueden modificarse sin afectar la ejecución de las réplicas de la aplicación.
-1. index.html (Frontend)
-
-NGINX sirve este archivo directamente. Los cambios son visibles de forma inmediata en el próximo request.
-Bash
-
-# Editar directamente en la VM
+Referencia rápida para saber qué hacer después de modificar cada archivo del proyecto en la VM.
+ 
+---
+ 
+## Regla general
+ 
+| Tipo de archivo | Acción tras editar |
+|---|---|
+| Estático (HTML, CSS, JS) | **Nada** — el cambio es inmediato |
+| Configuración de NGINX | `nginx -t` → `systemctl reload nginx` |
+| Código Go (`main.go`) | Recompilar + reemplazar binario + reiniciar réplicas |
+| Unit de systemd (`.service`) | `daemon-reload` + reiniciar réplicas |
+ 
+---
+ 
+## Archivos que puedes cambiar sin hacer nada más
+ 
+### `index.html` — Frontend estático
+ 
+NGINX sirve este archivo directamente desde disco en cada request. No hay caché ni proceso que reiniciar.
+ 
+```bash
+# Editar en la VM
 sudo nano /opt/validador-tx/static/index.html
-
-# No necesitas reiniciar nada. Para verificar el cambio:
+ 
+# El próximo request ya ve el cambio. Para verificar:
 curl -s http://localhost | grep '<title>'
-
-2. validador-tx.nginx.conf (Configuración NGINX)
-
-Requiere recargar el servicio NGINX para aplicar nuevas rutas, puertos o reglas de balanceo.
-Bash
-
+```
+ 
+---
+ 
+## Archivos que solo requieren recargar NGINX
+ 
+### `validador-tx` — Configuración de NGINX
+ 
+Las réplicas Go no se tocan. Solo se recarga el proceso NGINX con la nueva configuración.
+ 
+```bash
 # Editar la configuración
 sudo nano /etc/nginx/sites-available/validador-tx
-
-# 1. Verificar que la sintaxis sea correcta
+ 
+# Verificar sintaxis antes de aplicar (nunca saltar este paso)
 sudo nginx -t
-
-# 2. Aplicar cambios sin cortar conexiones activas
+ 
+# Aplicar sin cortar conexiones activas
 sudo systemctl reload nginx
-
-🛠️ Cambios que requieren Acción (Recompilación y Reinicio)
-1. main.go (Aplicación Core)
-
-Al ser un lenguaje compilado, cualquier cambio en la lógica requiere generar un nuevo binario y reiniciar las réplicas para liberar el archivo en uso.
-
-Pasos para el despliegue:
-
-    Conectarse a la VM:
-    Bash
-
-    ssh usuario@146.83.102.20
-
-    Preparar y Compilar:
-    Bash
-
-    cd ~/validador-tx
-    nano main.go
-    go build -o validador-tx .
-
-    Detener réplicas y reemplazar binario:
-    Bash
-
-    # Parar réplicas para liberar el binario
-    sudo systemctl stop validador-tx@3001 validador-tx@3002 validador-tx@3003
-
-    # Reemplazar e instalar
-    sudo cp validador-tx /opt/validador-tx/validador-tx
-    sudo chown www-data:www-data /opt/validador-tx/validador-tx
-
-    Reiniciar y Verificar:
-    Bash
-
-    sudo systemctl start validador-tx@3001 validador-tx@3002 validador-tx@3003
-
-    # Test de salud
-    for p in 3001 3002 3003; do
-      echo -n ":$p → "; curl -s http://localhost:$p/health
-    done
-
-    [!TIP]
-    Si no te importa un tiempo de inactividad (downtime) de milisegundos, puedes simplificar los pasos 3 y 4 usando:
-    sudo systemctl restart validador-tx@{3001,3002,3003}
-
-2. validador-tx@.service (Unidad de Systemd)
-
-Si modificas variables de entorno, límites de recursos o parámetros de ejecución en el archivo de servicio.
-Bash
-
+```
+ 
+> `reload` le indica a NGINX que relea su configuración sin matar el proceso. Las conexiones existentes se mantienen. `restart` en cambio corta todo — úsalo solo si `reload` no funciona.
+ 
+---
+ 
+## Archivos que requieren recompilar
+ 
+### `main.go` — Aplicación Go
+ 
+Go es un lenguaje compilado. Cualquier cambio en el código fuente debe pasar por el compilador antes de tener efecto. El binario que corren las réplicas es `/opt/validador-tx/validador-tx` — mientras no se reemplace ese archivo, los cambios en `main.go` no tienen ningún efecto.
+ 
+```bash
+# 1. Ir al directorio fuente en la VM
+cd ~/validador-tx
+ 
+# 2. Editar el código
+nano main.go
+ 
+# 3. Compilar (genera un nuevo ejecutable ./validador-tx)
+go build -o validador-tx .
+ 
+# 4. Parar las 3 réplicas
+sudo systemctl stop validador-tx@3001
+sudo systemctl stop validador-tx@3002
+sudo systemctl stop validador-tx@3003
+ 
+# 5. Reemplazar el binario instalado
+sudo cp validador-tx /opt/validador-tx/validador-tx
+sudo chown www-data:www-data /opt/validador-tx/validador-tx
+ 
+# 6. Reiniciar las réplicas
+sudo systemctl start validador-tx@3001
+sudo systemctl start validador-tx@3002
+sudo systemctl start validador-tx@3003
+ 
+# 7. Verificar que las 3 quedaron activas
+for p in 3001 3002 3003; do
+  printf "%-20s %s\n" "validador-tx@$p" "$(systemctl is-active validador-tx@$p)"
+done
+```
+ 
+Los pasos 4–6 se pueden condensar si no te importa un downtime de 1-2 segundos:
+ 
+```bash
+sudo systemctl restart validador-tx@3001
+sudo systemctl restart validador-tx@3002
+sudo systemctl restart validador-tx@3003
+```
+ 
+### `validador-tx@.service` — Unit file de systemd
+ 
+systemd carga este archivo al iniciar el servicio y no lo vuelve a leer mientras corre. Cualquier cambio requiere notificar a systemd con `daemon-reload` y reiniciar las instancias.
+ 
+```bash
+# Editar el unit file
 sudo nano /etc/systemd/system/validador-tx@.service
-
-# Recargar configuración de systemd y reiniciar réplicas
+ 
+# Notificar a systemd del cambio (no reinicia nada todavía)
 sudo systemctl daemon-reload
-sudo systemctl restart validador-tx@3001 validador-tx@3002 validador-tx@3003
-
-📊 Tabla Resumen
-Archivo	Función	Acción tras editar
-index.html	Frontend estático	Ninguna (Inmediato)
-nginx.conf	Balanceo y rutas	nginx -t → systemctl reload nginx
-main.go	Lógica del servidor	Recompilar + Reemplazar binario + Reiniciar réplicas
-validador-tx@.service	Gestión de procesos	daemon-reload + Reiniciar réplicas
-💡 Regla General
-
-    Texto leído en runtime (HTML, Config de NGINX): Cambio inmediato o simple reload.
-
-    Código fuente compilado (Go): Requiere recompilar el binario y reiniciar los procesos para que carguen el nuevo código en memoria.
+ 
+# Reiniciar las réplicas para aplicar la nueva configuración
+sudo systemctl restart validador-tx@3001
+sudo systemctl restart validador-tx@3002
+sudo systemctl restart validador-tx@3003
+```
+ 
+---
+ 
+## Flujo si editas desde tu máquina local y subes con scp
+ 
+Si prefieres editar en tu máquina y subir el archivo ya listo:
+ 
+```bash
+# Subir solo el frontend
+scp index.html usuario@146.83.102.20:/opt/validador-tx/static/index.html
+ 
+# Subir y recompilar main.go
+scp main.go usuario@146.83.102.20:~/validador-tx/main.go
+ssh usuario@146.83.102.20 "
+  cd ~/validador-tx &&
+  go build -o validador-tx . &&
+  sudo systemctl stop validador-tx@3001 validador-tx@3002 validador-tx@3003 &&
+  sudo cp validador-tx /opt/validador-tx/validador-tx &&
+  sudo chown www-data:www-data /opt/validador-tx/validador-tx &&
+  sudo systemctl start validador-tx@3001 validador-tx@3002 validador-tx@3003
+"
+ 
+# Subir nueva config de NGINX
+scp validador-tx.nginx.conf usuario@146.83.102.20:/etc/nginx/sites-available/validador-tx
+ssh usuario@146.83.102.20 "sudo nginx -t && sudo systemctl reload nginx"
+```
 
 
